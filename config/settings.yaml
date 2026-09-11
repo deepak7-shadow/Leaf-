@@ -1,0 +1,77 @@
+# AI Nozzle Pesticide-Spraying System Configuration
+# Optimized for real-time edge processing (low latency, high precision)
+
+system:
+  device_name: "AI-Nozzle-v1"
+  processing_resolution:
+    width: 640
+    height: 480
+  camera:
+    source: 0                 # 0 for default USB/CSI webcam, or path to video file
+    capture_width: 640
+    capture_height: 480
+    fps: 30
+
+stage1_candidate_detector:
+  # HSV Color Filtering (Green vegetation)
+  hsv:
+    hue_min: 25               # Greenish-yellow boundary
+    hue_max: 88               # Deep green boundary
+    sat_min: 35               # Reject desaturated/grayish objects
+    sat_max: 255
+    val_min: 30               # Reject overly dark shadows
+    val_max: 255
+
+  # Excess Green Index (ExG = 2g - r - b)
+  vegetation_index:
+    enabled: true
+    method: "exg"             # Options: "exg" (Excess Green), "ngrdi"
+    exg_threshold: 0.05       # Normalized ExG threshold (typically 0.03 - 0.12)
+    use_otsu: false           # Set true for dynamic lighting conditions
+
+  # Morphological Noise Filtering
+  morphology:
+    open_kernel_size: 3       # Eliminates salt-and-pepper / single pixel noise
+    close_kernel_size: 7      # Closes internal leaf venation / holes
+
+  # Geometric Leaf Contour Filtering
+  contour_filters:
+    min_area: 450             # Reject tiny noise / weeds below threshold (pixels)
+    max_area: 180000          # Reject screen/cloth spanning entire frame
+    min_aspect_ratio: 0.18    # width / height (supports elongated & broad leaves)
+    max_aspect_ratio: 5.50
+    min_solidity: 0.40        # Area / ConvexHullArea (filters complex jagged non-leaf clutter)
+    min_extent: 0.15          # Area / BoundingRectArea
+    margin_expansion_pct: 0.08 # Add 8% border context around ROI for CNN
+
+stage2_classifier:
+  model_path: "models/mobilenet_v3_small.onnx"
+  input_size: 224             # 224x224 input for MobileNetV3-Small
+  input_channels: 3
+  # Normalization parameters (ImageNet RGB standard)
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  confidence_threshold: 0.80  # Minimum confidence required to trigger spray
+  classes:
+    0: "REAL_LIVING_LEAF"
+    1: "FAKE_PRINTED_ARTIFICIAL"
+  onnx_providers:
+    - "CPUExecutionProvider"
+  intra_op_num_threads: 2     # Optimized for low-latency embedded CPU cores
+
+nozzle_controller:
+  mode: "simulation"          # Options: "simulation", "serial", "gpio"
+  spray_pulse_ms: 120         # Actuation duration per spray event (milliseconds)
+  cooldown_ms: 250            # Debounce lockout period to prevent valve chatter
+  serial_port: "COM3"         # For Arduino/ESP32 relay driver
+  baud_rate: 115200
+  gpio_pin: 18                # Raspberry Pi BCM GPIO pin
+  active_high: true
+  safety_lockout: false       # Master safety override
+
+display:
+  show_hud: true
+  show_pip_mask: true         # Picture-in-picture vegetation mask in top right
+  pip_scale: 0.28
+  save_detections: false
+  output_dir: "captures"

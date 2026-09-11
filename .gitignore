@@ -1,0 +1,31 @@
+# Python virtual environment
+.venv/
+env/
+venv/
+ENV/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyTorch / Checkpoints
+*.pt
+*.pth
+.cache/
+
+# Datasets and captured media
+data/synthetic/
+data/collected/real/*
+!data/collected/real/.gitkeep
+data/collected/fake/*
+!data/collected/fake/.gitkeep
+captures/
+*.mp4
+snapshot_*.jpg
+
+# OS and IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
