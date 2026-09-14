@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Tuple
 import argparse
 import os
 import random
+import sys
 import time
 import cv2
 import numpy as np
@@ -20,6 +21,11 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
+
+# Add parent directory to sys.path if run directly
+_parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _parent_dir not in sys.path:
+    sys.path.insert(0, _parent_dir)
 
 from models.export_onnx import export_mobilenet_v3_small
 from utils.synthetic_generator import SyntheticSceneGenerator
