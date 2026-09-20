@@ -51,7 +51,7 @@ stage2_classifier:
   # Normalization parameters (ImageNet RGB standard)
   mean: [0.485, 0.456, 0.406]
   std: [0.229, 0.224, 0.225]
-  confidence_threshold: 0.80  # Minimum confidence required to trigger spray
+  confidence_threshold: 0.65  # Minimum confidence required to trigger spray (optimized for 14 real farm crops)
   classes:
     0: "REAL_LIVING_LEAF"
     1: "FAKE_PRINTED_ARTIFICIAL"

@@ -83,6 +83,52 @@ class TestRealFarmDataset(unittest.TestCase):
                 f"Sample {crops[i]} was not recognized as REAL_LIVING_LEAF (got {pred.class_name})"
             )
 
+    def test_fake_dataset_integrity(self):
+        """Verify fake / artificial distractor dataset contains > 100 images and manifest."""
+        fake_dir = "data/collected/fake"
+        self.assertTrue(os.path.exists(fake_dir), "Fake dataset directory missing")
+        manifest_path = os.path.join(fake_dir, "manifest.json")
+        self.assertTrue(os.path.exists(manifest_path), "Fake manifest.json missing")
+
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+
+        self.assertIn("total_images", manifest)
+        self.assertGreaterEqual(manifest["total_images"], 100)
+
+        fake_imgs = [f for f in os.listdir(fake_dir) if f.lower().endswith(".jpg")]
+        self.assertGreaterEqual(len(fake_imgs), 100)
+
+    def test_stage2_classifier_recognizes_fake_leaves(self):
+        """Verify that Stage 2 classifier classifies fake leaf images as FAKE_PRINTED_ARTIFICIAL."""
+        classifier = Stage2Classifier()
+        fake_dir = "data/collected/fake"
+        sample_files = [f for f in os.listdir(fake_dir) if f.lower().endswith(".jpg")][:10]
+        self.assertTrue(len(sample_files) >= 5)
+
+        test_imgs = [cv2.imread(os.path.join(fake_dir, f)) for f in sample_files]
+        predictions = classifier.classify_batch(test_imgs)
+        for i, pred in enumerate(predictions):
+            self.assertEqual(
+                pred.class_name, "FAKE_PRINTED_ARTIFICIAL",
+                f"Fake sample {sample_files[i]} was not recognized as FAKE_PRINTED_ARTIFICIAL"
+            )
+            self.assertGreaterEqual(pred.confidence, 0.85)
+
+    def test_synthetic_generator_injects_real_and_fake_leaves(self):
+        """Verify SyntheticSceneGenerator loads real farm photos and fake distractors."""
+        from utils.synthetic_generator import SyntheticSceneGenerator
+        gen = SyntheticSceneGenerator(width=640, height=480)
+        self.assertGreater(len(gen.real_photos), 350)
+        self.assertGreater(len(gen.fake_photos), 50)
+
+        scene, gt = gen.generate_scene(include_real=True, include_fake=True)
+        self.assertEqual(scene.shape, (480, 640, 3))
+        self.assertEqual(len(gt), 2)
+        types = [item["type"] for item in gt]
+        self.assertIn("REAL_LIVING_LEAF", types)
+        self.assertIn("FAKE_PRINTED_ARTIFICIAL", types)
+
 
 if __name__ == "__main__":
     unittest.main()

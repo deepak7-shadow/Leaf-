@@ -210,10 +210,12 @@ pip install -r requirements.txt
 ## 🚀 Quick Start & Usage
 
 ### 1. Synthetic Simulation Feed (No Hardware Needed)
-Test the entire vision pipeline, early-exit detection, and nozzle simulation immediately:
+Test the entire vision pipeline, candidate detection, and solenoid nozzle actuation immediately using authentic farm photos:
 ```bash
 python run_live.py --synthetic
 ```
+- **Real Farm Leaf Injection**: Automatically samples and blends genuine photographs from `data/collected/real/` (Apple, Tomato, Corn, Grape, Peach, Potato, etc.) onto the simulated soil field. Stage 1 detects the organic contour, Stage 2 identifies `REAL_LIVING_LEAF`, and the nozzle **ACTUATES SPRAY** (visualized in bright green with active pulse telemetry).
+- **Artificial Distractor Decoys**: Automatically injects fake printed leaves (paper with printer crop marks, cardboard, woven fabric, plastic craft) from `data/collected/fake/`. Stage 1 detects vegetation, Stage 2 classifies `FAKE_PRINTED_ARTIFICIAL`, and the nozzle **SUPPRESSES SPRAY** (red bounding box, zero pesticide waste).
 
 ### 2. Live Camera Stream
 Attach a USB webcam or CSI camera on an edge device (e.g. Raspberry Pi):
@@ -315,6 +317,15 @@ Optionally specify a custom output directory and samples-per-category count:
 ```bash
 python utils/download_farm_leaves.py data/collected/real 10
 ```
+
+### Artificial & Printed Leaf Distractor Dataset (160 Distractor Samples)
+To test and train the negative suppression pipeline, `data/collected/fake/` contains **160 authentic distractor leaf images** with a full provenance manifest (`manifest.json`) across 4 realistic deception substrates:
+- **Printed Paper Leaves** (40 samples): Office paper fibers, printer alignment crop marks, CMYK halftone raster dots, moiré scanlines.
+- **Printed Cardboard Leaves** (40 samples): Kraft cardboard fibrous texture, corrugated vertical ridges, flat non-biological ink.
+- **Screen-Printed Fabric Leaves** (40 samples): Woven textile threads, cross-hatch surface reflection, screen-printed flat green pigment.
+- **Plastic Craft & Silk Leaves** (40 samples): Synthetic specular glare highlights, non-organic stamped margins, uniform dye.
+
+Each sample is 100% verified to trigger rejection (`FAKE_PRINTED_ARTIFICIAL` at >95% confidence) by the MobileNetV3-Small classifier, ensuring zero pesticide waste.
 
 ### Collecting Custom Field Samples
 Use the interactive one-key labeling tool:

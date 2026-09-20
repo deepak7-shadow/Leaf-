@@ -8,17 +8,59 @@ Generates realistic simulated scenes containing:
 - Non-leaf distractors (soil, stones, dry debris)
 """
 
-from typing import List, Tuple
+import os
+from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
 
 class SyntheticSceneGenerator:
-    """Generates synthetic camera frames containing real and fake leaf candidates."""
+    """Generates synthetic camera frames containing real and fake leaf candidates.
 
-    def __init__(self, width: int = 640, height: int = 480):
+    Supports blending authentic farm leaf photographs from data/collected/real/
+    and artificial/printed leaf images from data/collected/fake/ onto simulated
+    agricultural soil backgrounds, with graceful fallback to procedural generation.
+    """
+
+    def __init__(
+        self,
+        width: int = 640,
+        height: int = 480,
+        real_dir: str = "data/collected/real",
+        fake_dir: str = "data/collected/fake",
+        use_real_photos: bool = True,
+        use_fake_photos: bool = True
+    ):
         self.width = width
         self.height = height
+        self.real_dir = real_dir
+        self.fake_dir = fake_dir
+        self.use_real_photos = use_real_photos
+        self.use_fake_photos = use_fake_photos
+
+        # Discover real farm leaf photos
+        self.real_photos = []
+        if os.path.isdir(self.real_dir):
+            self.real_photos = [
+                os.path.join(self.real_dir, f)
+                for f in os.listdir(self.real_dir)
+                if f.lower().endswith((".jpg", ".jpeg", ".png"))
+            ]
+
+        # Discover fake / artificial leaf photos
+        self.fake_photos = []
+        if os.path.isdir(self.fake_dir):
+            self.fake_photos = [
+                os.path.join(self.fake_dir, f)
+                for f in os.listdir(self.fake_dir)
+                if f.lower().endswith((".jpg", ".jpeg", ".png"))
+            ]
+        if not self.fake_photos and os.path.isdir("data/synthetic/fake"):
+            self.fake_photos = [
+                os.path.join("data/synthetic/fake", f)
+                for f in os.listdir("data/synthetic/fake")
+                if f.lower().endswith((".jpg", ".jpeg", ".png"))
+            ]
 
     # ------------------------------------------------------------------
     # Background helpers
@@ -267,6 +309,128 @@ class SyntheticSceneGenerator:
         return (x1, y1, x2 - x1, y2 - y1)
 
     # ------------------------------------------------------------------
+    # Real farm leaf photo compositing
+    # ------------------------------------------------------------------
+
+    def draw_real_leaf_photo(
+        self,
+        canvas: np.ndarray,
+        center: Tuple[int, int],
+        size: int = 190,
+        angle: float = 0.0
+    ) -> Tuple[int, int, int, int]:
+        """Composite an authentic farm leaf photo onto canvas using organic leaf alpha masking.
+        
+        Extracts the genuine chlorophyll vegetation boundary from the photo,
+        optionally rotates, and alpha-blends smoothly into the soil canvas.
+        """
+        if not self.real_photos:
+            return self.draw_real_leaf(canvas, center, (size // 2, size // 3), angle)
+
+        img_path = np.random.choice(self.real_photos)
+        img = cv2.imread(img_path)
+        if img is None:
+            return self.draw_real_leaf(canvas, center, (size // 2, size // 3), angle)
+
+        img_resized = cv2.resize(img, (size, size), interpolation=cv2.INTER_LINEAR)
+
+        # Robust leaf mask: separates genuine leaf from neutral studio background
+        hsv = cv2.cvtColor(img_resized, cv2.COLOR_BGR2HSV)
+        mask_hsv = cv2.inRange(hsv, np.array([12, 25, 20]), np.array([95, 255, 255]))
+
+        r = img_resized[:, :, 2].astype(float)
+        g = img_resized[:, :, 1].astype(float)
+        b = img_resized[:, :, 0].astype(float)
+        denom = r + g + b + 1e-6
+        exg = (2.0 * g - r - b) / denom
+        mask_exg = (exg > 0.02).astype(np.uint8) * 255
+
+        leaf_mask = cv2.bitwise_or(mask_hsv, mask_exg)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        leaf_mask = cv2.morphologyEx(leaf_mask, cv2.MORPH_CLOSE, kernel)
+        leaf_mask = cv2.erode(leaf_mask, kernel, iterations=1)
+
+        # Optional rotation
+        if abs(angle) > 1.0:
+            rot_mat = cv2.getRotationMatrix2D((size / 2.0, size / 2.0), angle, 1.0)
+            img_resized = cv2.warpAffine(img_resized, rot_mat, (size, size), borderMode=cv2.BORDER_REFLECT_101)
+            leaf_mask = cv2.warpAffine(leaf_mask, rot_mat, (size, size), borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
+        alpha = (cv2.GaussianBlur(leaf_mask, (3, 3), 0).astype(float) / 255.0)[:, :, None]
+
+        cx, cy = center
+        half = size // 2
+        y1, y2 = max(0, cy - half), min(canvas.shape[0], cy + half)
+        x1, x2 = max(0, cx - half), min(canvas.shape[1], cx + half)
+
+        src_h = y2 - y1
+        src_w = x2 - x1
+        if src_h <= 0 or src_w <= 0:
+            return (cx, cy, 0, 0)
+
+        crop_img = img_resized[:src_h, :src_w]
+        crop_alpha = alpha[:src_h, :src_w]
+
+        roi = canvas[y1:y2, x1:x2].astype(float)
+        blended = crop_img.astype(float) * crop_alpha + roi * (1.0 - crop_alpha)
+        canvas[y1:y2, x1:x2] = np.clip(blended, 0, 255).astype(np.uint8)
+
+        cnts, _ = cv2.findContours(leaf_mask[:src_h, :src_w], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if cnts:
+            bx, by, bw, bh = cv2.boundingRect(max(cnts, key=cv2.contourArea))
+            return (x1 + bx, y1 + by, bw, bh)
+        return (x1, y1, src_w, src_h)
+
+    # ------------------------------------------------------------------
+    # Fake / artificial leaf photo compositing
+    # ------------------------------------------------------------------
+
+    def draw_fake_leaf_photo(
+        self,
+        canvas: np.ndarray,
+        center: Tuple[int, int],
+        size: int = 160,
+        angle: float = 0.0
+    ) -> Tuple[int, int, int, int]:
+        """Composite a fake/artificial leaf photo (printed paper, cardboard, fabric, plastic)
+        onto canvas, simulating an artificial distractor card/sheet lying in the field.
+        """
+        if not self.fake_photos:
+            return self.draw_fake_printed_leaf(canvas, center, (size // 2, size // 3))
+
+        img_path = np.random.choice(self.fake_photos)
+        img = cv2.imread(img_path)
+        if img is None:
+            return self.draw_fake_printed_leaf(canvas, center, (size // 2, size // 3))
+
+        img_resized = cv2.resize(img, (size, size), interpolation=cv2.INTER_LINEAR)
+
+        if abs(angle) > 1.0:
+            rot_mat = cv2.getRotationMatrix2D((size / 2.0, size / 2.0), angle, 1.0)
+            img_resized = cv2.warpAffine(
+                img_resized, rot_mat, (size, size),
+                borderMode=cv2.BORDER_CONSTANT, borderValue=(32, 42, 58)
+            )
+
+        cx, cy = center
+        half = size // 2
+        y1, y2 = max(0, cy - half), min(canvas.shape[0], cy + half)
+        x1, x2 = max(0, cx - half), min(canvas.shape[1], cx + half)
+
+        src_h = y2 - y1
+        src_w = x2 - x1
+        if src_h <= 0 or src_w <= 0:
+            return (cx, cy, 0, 0)
+
+        patch = img_resized[:src_h, :src_w]
+        canvas[y1:y2, x1:x2] = patch
+
+        # Dark border outline simulating a card / printed sheet edge
+        cv2.rectangle(canvas, (x1, y1), (x2 - 1, y2 - 1), (80, 80, 80), 1)
+
+        return (x1, y1, src_w, src_h)
+
+    # ------------------------------------------------------------------
     # Scene composer
     # ------------------------------------------------------------------
 
@@ -275,26 +439,46 @@ class SyntheticSceneGenerator:
         include_real: bool = True,
         include_fake: bool = True
     ) -> Tuple[np.ndarray, List[dict]]:
-        """Generate a complete frame with specified targets."""
+        """Generate a complete frame with specified targets.
+        
+        Blends authentic farm leaf photographs and artificial/printed leaves
+        into a realistic simulated field scene.
+        """
         frame = self.generate_soil_background()
         ground_truth = []
 
         if include_real:
-            cx = int(self.width * 0.30)
-            cy = int(self.height * 0.50)
-            ax = np.random.randint(68, 88)
-            ay = np.random.randint(40, 55)
-            ang = np.random.uniform(-35, -10)
-            bbox = self.draw_real_leaf(frame, (cx, cy), (ax, ay), angle=ang)
+            cx = int(self.width * 0.28) + np.random.randint(-12, 12)
+            cy = int(self.height * 0.50) + np.random.randint(-12, 12)
+            size = np.random.randint(180, 210)
+            ang = np.random.uniform(-20, 20)
+
+            if self.use_real_photos and self.real_photos:
+                bbox = self.draw_real_leaf_photo(frame, (cx, cy), size=size, angle=ang)
+            else:
+                ax = np.random.randint(68, 88)
+                ay = np.random.randint(40, 55)
+                bbox = self.draw_real_leaf(frame, (cx, cy), (ax, ay), angle=ang)
+
             ground_truth.append({"type": "REAL_LIVING_LEAF", "bbox": bbox})
 
         if include_fake:
-            cx = int(self.width * 0.72)
-            cy = int(self.height * 0.50)
-            ax = np.random.randint(58, 72)
-            ay = np.random.randint(36, 48)
-            substrate = np.random.choice(["paper", "fabric"], p=[0.75, 0.25])
-            bbox = self.draw_fake_printed_leaf(frame, (cx, cy), (ax, ay), substrate=substrate)
+            cx = int(self.width * 0.72) + np.random.randint(-12, 12)
+            cy = int(self.height * 0.50) + np.random.randint(-12, 12)
+            size = np.random.randint(150, 175)
+            ang = np.random.uniform(-15, 15)
+
+            if self.use_fake_photos and self.fake_photos:
+                # Alternate between photographed fake sample and procedural printed leaf
+                if np.random.random() < 0.75:
+                    bbox = self.draw_fake_leaf_photo(frame, (cx, cy), size=size, angle=ang)
+                else:
+                    substrate = np.random.choice(["paper", "fabric"], p=[0.75, 0.25])
+                    bbox = self.draw_fake_printed_leaf(frame, (cx, cy), (size // 2, size // 3), substrate=substrate)
+            else:
+                substrate = np.random.choice(["paper", "fabric"], p=[0.75, 0.25])
+                bbox = self.draw_fake_printed_leaf(frame, (cx, cy), (size // 2, size // 3), substrate=substrate)
+
             ground_truth.append({"type": "FAKE_PRINTED_ARTIFICIAL", "bbox": bbox})
 
         return frame, ground_truth

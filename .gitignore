@@ -21,6 +21,8 @@ data/collected/real/*
 !data/collected/real/manifest.json
 data/collected/fake/*
 !data/collected/fake/.gitkeep
+!data/collected/fake/manifest.json
+!data/collected/fake/*.jpg
 captures/
 *.mp4
 snapshot_*.jpg

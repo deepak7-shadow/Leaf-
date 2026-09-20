@@ -66,6 +66,7 @@ def run_app(
     synth_gen = None
     if synthetic:
         synth_gen = SyntheticSceneGenerator(width=640, height=480)
+        print(f" [Simulation Feeder]   : Injected {len(synth_gen.real_photos)} Real Farm Leaf Photos & {len(synth_gen.fake_photos)} Artificial Distractor Samples")
     else:
         video_src = source if source else camera_id
         cap = cv2.VideoCapture(video_src)
@@ -73,6 +74,7 @@ def run_app(
             print(f"[ERROR] Could not open video source: {video_src}. Switching to synthetic mode...")
             synthetic = True
             synth_gen = SyntheticSceneGenerator(width=640, height=480)
+            print(f" [Simulation Feeder]   : Injected {len(synth_gen.real_photos)} Real Farm Leaf Photos & {len(synth_gen.fake_photos)} Artificial Distractor Samples")
 
     # Benchmark metrics
     frame_count = 0
