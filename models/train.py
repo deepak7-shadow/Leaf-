@@ -153,23 +153,27 @@ def create_synthetic_dataset(output_dir: str = "data/synthetic", num_real: int =
 
 def train_mobilenet_v3(
     data_dir: str,
-    epochs: int = 10,
+    epochs: int = 15,
     batch_size: int = 16,
     lr: float = 1e-4,
     export_onnx: bool = True,
     output_onnx: str = "models/mobilenet_v3_small.onnx"
 ):
     """Train MobileNetV3-Small binary classifier."""
-    device = torch.device("cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Training on device: {device}")
 
-    # Standard ImageNet normalization
+    # Strong augmentations for real-world leaf dataset
     train_transform = transforms.Compose([
         transforms.ToPILImage(),
-        transforms.Resize((224, 224)),
+        transforms.Resize((256, 256)),
+        transforms.RandomCrop(224),
         transforms.RandomHorizontalFlip(),
         transforms.RandomVerticalFlip(),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+        transforms.RandomRotation(degrees=30),
+        transforms.RandomPerspective(distortion_scale=0.3, p=0.4),
+        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.05),
+        transforms.RandomGrayscale(p=0.05),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
@@ -258,8 +262,8 @@ def train_mobilenet_v3(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train MobileNetV3-Small for Leaf Detection")
-    parser.add_argument("--data-dir", default="data/synthetic", help="Path to dataset with real/ and fake/ subdirs")
-    parser.add_argument("--epochs", type=int, default=5, help="Number of epochs")
+    parser.add_argument("--data-dir", default="data/downloaded", help="Path to dataset with real/ and fake/ subdirs")
+    parser.add_argument("--epochs", type=int, default=15, help="Number of epochs")
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--generate-synthetic", action="store_true", help="Generate synthetic dataset first")
