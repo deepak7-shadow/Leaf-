@@ -9,3 +9,6 @@ __pycache__/
 train_log.txt
 download_log.txt
 snapshot_*.jpg
+
+*.onnx
+*.onnx.data
