@@ -1,14 +1,45 @@
-﻿.venv/
-data/raw_download/
-data/training/
-data/synthetic/
+# Virtual Environment
+.venv/
+env/
+venv/
+
+# Datasets & Downloads
+data/
+captures/
+*.jpg
+*.jpeg
+*.png
+
+# Python cache & build
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Large checkpoint weights (keep deployed ONNX in models/)
 *.pth
+*.pt
+*.bin
 *.data
-train_log.txt
-download_log.txt
+
+# Logs & temp files
+*.log
+*.txt
+train_log*.txt
+download_log*.txt
 snapshot_*.jpg
 
-*.onnx
-*.onnx.data
+# Internal test & data collection scripts
+tests/
+dataset_collector.py
+download_dataset.py
+export_onnx.py
+organize_and_train.py
+robust_download.py
+run_live.py
+verify_model.py
+cam_raw_test.py
+utils/category_trees.json
+utils/download_farm_leaves.py
+utils/generate_fake_dataset.py
+utils/visualization.py

@@ -163,7 +163,7 @@ def train_mobilenet_v3(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Training on device: {device}")
 
-    # Strong augmentations for real-world leaf dataset
+    # Strong augmentations + webcam-quality simulation for real-world accuracy
     train_transform = transforms.Compose([
         transforms.ToPILImage(),
         transforms.Resize((256, 256)),
@@ -172,9 +172,15 @@ def train_mobilenet_v3(
         transforms.RandomVerticalFlip(),
         transforms.RandomRotation(degrees=30),
         transforms.RandomPerspective(distortion_scale=0.3, p=0.4),
-        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.05),
+        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.08),
         transforms.RandomGrayscale(p=0.05),
+        # Webcam-quality simulation: blur + JPEG artifacts
+        transforms.RandomApply([transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0))], p=0.4),
         transforms.ToTensor(),
+        # Additive Gaussian noise to simulate sensor noise
+        transforms.RandomApply([
+            transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.03)
+        ], p=0.5),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
