@@ -3,8 +3,7 @@
 Includes:
 - Specialized augmentations for detecting printed, cloth, screen, and artificial artifacts
 - Transfer learning from pre-trained MobileNetV3-Small
-- Validation metrics (Precision, Recall, F1, Confusion Matrix)
-- Synthetic dataset bootstrapper to train out-of-the-box
+- Validation metrics
 - Automatic ONNX export of best model checkpoint
 """
 
@@ -40,21 +39,18 @@ class PrintAndArtifactAugmentation:
         h, w = img_np.shape[:2]
 
         if aug == "moire":
-            # Add subtle horizontal / vertical scanlines (screen or printer artifact)
             freq = random.randint(4, 12)
             lines = np.tile(np.sin(np.linspace(0, freq * np.pi, h))[:, None, None], (1, w, 3))
             noisy = np.clip(img_np.astype(np.float32) + lines * 15.0, 0, 255).astype(np.uint8)
             return noisy
 
         elif aug == "halftone":
-            # Color quantization simulating limited print gamut
             levels = random.randint(4, 8)
             step = 256 // levels
             quantized = (img_np // step) * step
             return quantized.astype(np.uint8)
 
         elif aug == "glare":
-            # Specular reflection (plastic sheen or glossy paper reflection)
             cx, cy = random.randint(w // 4, 3 * w // 4), random.randint(h // 4, 3 * h // 4)
             radius = random.randint(15, 35)
             glare_mask = np.zeros((h, w), dtype=np.float32)
@@ -64,7 +60,6 @@ class PrintAndArtifactAugmentation:
             return np.clip(result, 0, 255).astype(np.uint8)
 
         elif aug == "blur":
-            # Printing dot-gain blur
             ksize = random.choice([3, 5])
             return cv2.GaussianBlur(img_np, (ksize, ksize), 0)
 
@@ -74,22 +69,25 @@ class PrintAndArtifactAugmentation:
 class LeafDataset(Dataset):
     """Dataset for Real Living Leaves (0) vs Fake/Printed Leaves (1)."""
 
-    def __init__(self, data_dir: str, is_train: bool = True, transform=None):
-        self.samples: List[Tuple[str, int]] = []
+    def __init__(self, data_or_samples, is_train: bool = True, transform=None):
         self.transform = transform
         self.is_train = is_train
         self.artifact_aug = PrintAndArtifactAugmentation()
 
-        real_dir = os.path.join(data_dir, "real")
-        fake_dir = os.path.join(data_dir, "fake")
+        if isinstance(data_or_samples, list):
+            self.samples = data_or_samples
+        else:
+            self.samples: List[Tuple[str, int]] = []
+            real_dir = os.path.join(data_or_samples, "real")
+            fake_dir = os.path.join(data_or_samples, "fake")
 
-        for f in os.listdir(real_dir) if os.path.exists(real_dir) else []:
-            if f.lower().endswith(('.png', '.jpg', '.jpeg')):
-                self.samples.append((os.path.join(real_dir, f), 0))
+            for f in os.listdir(real_dir) if os.path.exists(real_dir) else []:
+                if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    self.samples.append((os.path.join(real_dir, f), 0))
 
-        for f in os.listdir(fake_dir) if os.path.exists(fake_dir) else []:
-            if f.lower().endswith(('.png', '.jpg', '.jpeg')):
-                self.samples.append((os.path.join(fake_dir, f), 1))
+            for f in os.listdir(fake_dir) if os.path.exists(fake_dir) else []:
+                if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    self.samples.append((os.path.join(fake_dir, f), 1))
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -103,7 +101,6 @@ class LeafDataset(Dataset):
         if self.is_train and label == 1 and random.random() < 0.5:
             bgr = self.artifact_aug(bgr)
 
-        # BGR -> RGB
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
         if self.transform:
@@ -115,46 +112,10 @@ class LeafDataset(Dataset):
         return img_tensor, label
 
 
-def create_synthetic_dataset(output_dir: str = "data/synthetic", num_real: int = 200, num_fake: int = 200):
-    """Generate synthetic dataset for immediate training without waiting for camera capture."""
-    os.makedirs(os.path.join(output_dir, "real"), exist_ok=True)
-    os.makedirs(os.path.join(output_dir, "fake"), exist_ok=True)
-
-    gen = SyntheticSceneGenerator(width=320, height=320)
-    print(f"[INFO] Generating {num_real} synthetic real leaf patches...")
-    for i in range(num_real):
-        canvas = gen.generate_soil_background()
-        cx, cy = 160 + random.randint(-20, 20), 160 + random.randint(-20, 20)
-        ax, ay = random.randint(45, 80), random.randint(25, 50)
-        ang = random.uniform(-60, 60)
-        x, y, w, h = gen.draw_real_leaf(canvas, (cx, cy), (ax, ay), angle=ang)
-        # Crop ROI
-        x1, y1 = max(0, x - 5), max(0, y - 5)
-        x2, y2 = min(320, x + w + 5), min(320, y + h + 5)
-        patch = canvas[y1:y2, x1:x2]
-        if patch.size > 0:
-            cv2.imwrite(os.path.join(output_dir, "real", f"real_{i:04d}.jpg"), patch)
-
-    print(f"[INFO] Generating {num_fake} synthetic printed/artificial leaf patches...")
-    for i in range(num_fake):
-        canvas = gen.generate_soil_background()
-        cx, cy = 160 + random.randint(-20, 20), 160 + random.randint(-20, 20)
-        ax, ay = random.randint(40, 75), random.randint(25, 45)
-        substrate = random.choice(["paper", "fabric"])
-        x, y, w, h = gen.draw_fake_printed_leaf(canvas, (cx, cy), (ax, ay), substrate=substrate)
-        x1, y1 = max(0, x - 5), max(0, y - 5)
-        x2, y2 = min(320, x + w + 5), min(320, y + h + 5)
-        patch = canvas[y1:y2, x1:x2]
-        if patch.size > 0:
-            cv2.imwrite(os.path.join(output_dir, "fake", f"fake_{i:04d}.jpg"), patch)
-
-    print(f"[SUCCESS] Synthetic dataset created at {output_dir}")
-
-
 def train_mobilenet_v3(
-    data_dir: str,
-    epochs: int = 15,
-    batch_size: int = 16,
+    data_dir: str = "data/training",
+    epochs: int = 12,
+    batch_size: int = 32,
     lr: float = 1e-4,
     export_onnx: bool = True,
     output_onnx: str = "models/mobilenet_v3_small.onnx"
@@ -163,7 +124,7 @@ def train_mobilenet_v3(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Training on device: {device}")
 
-    # Strong augmentations + webcam-quality simulation for real-world accuracy
+    # Webcam-quality simulation augmentations
     train_transform = transforms.Compose([
         transforms.ToPILImage(),
         transforms.Resize((256, 256)),
@@ -174,10 +135,8 @@ def train_mobilenet_v3(
         transforms.RandomPerspective(distortion_scale=0.3, p=0.4),
         transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.08),
         transforms.RandomGrayscale(p=0.05),
-        # Webcam-quality simulation: blur + JPEG artifacts
         transforms.RandomApply([transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0))], p=0.4),
         transforms.ToTensor(),
-        # Additive Gaussian noise to simulate sensor noise
         transforms.RandomApply([
             transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.03)
         ], p=0.5),
@@ -191,27 +150,49 @@ def train_mobilenet_v3(
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
-    full_dataset = LeafDataset(data_dir, is_train=True, transform=train_transform)
-    if len(full_dataset) == 0:
-        print("[ERROR] No samples found in dataset directory!")
+    real_dir = os.path.join(data_dir, "real")
+    fake_dir = os.path.join(data_dir, "fake")
+
+    samples = []
+    for f in os.listdir(real_dir) if os.path.exists(real_dir) else []:
+        if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+            samples.append((os.path.join(real_dir, f), 0))
+
+    for f in os.listdir(fake_dir) if os.path.exists(fake_dir) else []:
+        if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+            samples.append((os.path.join(fake_dir, f), 1))
+
+    if not samples:
+        print(f"[ERROR] No samples found in {data_dir}!")
         return
 
-    val_size = max(1, int(len(full_dataset) * 0.2))
-    train_size = len(full_dataset) - val_size
-    train_set, val_set = torch.utils.data.random_split(full_dataset, [train_size, val_size])
+    random.seed(42)
+    random.shuffle(samples)
+
+    val_size = max(1, int(len(samples) * 0.2))
+    train_samples = samples[val_size:]
+    val_samples   = samples[:val_size]
+
+    train_set = LeafDataset(train_samples, is_train=True, transform=train_transform)
+    val_set   = LeafDataset(val_samples, is_train=False, transform=val_transform)
 
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=False)
+    val_loader   = DataLoader(val_set, batch_size=batch_size, shuffle=False)
 
-    print(f"[INFO] Dataset loaded: {train_size} training samples, {val_size} validation samples.")
+    n_real = sum(1 for _, l in train_samples if l == 0)
+    n_fake = sum(1 for _, l in train_samples if l == 1)
+    print(f"[INFO] Train set: {len(train_set)} ({n_real} Real, {n_fake} Fake). Val set: {len(val_set)}.")
 
-    # Load Model
+    # Load Pre-trained Model
     model = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
     in_features = model.classifier[3].in_features
     model.classifier[3] = nn.Linear(in_features, 2)
     model.to(device)
 
-    criterion = nn.CrossEntropyLoss()
+    # Class-weighted loss for balanced gradient updates
+    tot = n_real + n_fake
+    class_weights = torch.tensor([tot / (2.0 * max(1, n_real)), tot / (2.0 * max(1, n_fake))], dtype=torch.float32).to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
 
     best_val_acc = 0.0
@@ -268,14 +249,11 @@ def train_mobilenet_v3(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train MobileNetV3-Small for Leaf Detection")
-    parser.add_argument("--data-dir", default="data/downloaded", help="Path to dataset with real/ and fake/ subdirs")
-    parser.add_argument("--epochs", type=int, default=15, help="Number of epochs")
-    parser.add_argument("--batch-size", type=int, default=16, help="Batch size")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--generate-synthetic", action="store_true", help="Generate synthetic dataset first")
+    parser.add_argument("--data-dir", default="data/training", help="Path to dataset with real/ and fake/ subdirs")
+    parser.add_argument("--output-dir", default="models", help="Directory for output models")
+    parser.add_argument("--epochs", type=int, default=12, help="Number of epochs")
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
+    parser.add_argument("--lr", type=float, default=2e-4, help="Learning rate")
     args = parser.parse_args()
-
-    if args.generate_synthetic:
-        create_synthetic_dataset(args.data_dir, num_real=150, num_fake=150)
 
     train_mobilenet_v3(args.data_dir, epochs=args.epochs, batch_size=args.batch_size, lr=args.lr)
