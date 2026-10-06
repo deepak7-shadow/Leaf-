@@ -1,13 +1,12 @@
-"""Live webcam Real vs Fake Leaf Detector with ROI Targeting and Precision Stabilization.
+"""Live webcam Real vs Fake Leaf Detector with ROI Targeting and Camera Switching.
 
 Hold any leaf (real or printed/fake) inside the on-screen target box.
-The model performs inference specifically on the region of interest with
-temporal smoothing and stability locking to eliminate rapid flickering.
+Supports hot-switching between built-in camera and external USB webcam on the fly.
 
 Usage:
-    python camera_test.py                    # Uses default camera
-    python camera_test.py --camera 1         # Use camera index 1
-    python camera_test.py --model models/mobilenet_v3_small.onnx
+    python camera_test.py --camera 1         # Uses external USB webcam (Lenovo FHD)
+    python camera_test.py --camera 0         # Uses built-in laptop camera
+    python camera_test.py                    # Auto-detects (prefers external webcam if plugged in)
 """
 
 import argparse
@@ -80,7 +79,6 @@ def get_roi_coords(h, w):
 
 def draw_reticle(frame, bx1, by1, bx2, by2, color, thickness=3, length=28):
     """Draw high-tech corner brackets around the leaf targeting area."""
-    # Faint guide rectangle
     overlay = frame.copy()
     cv2.rectangle(overlay, (bx1, by1), (bx2, by2), color, 1)
     cv2.addWeighted(overlay, 0.35, frame, 0.65, 0, frame)
@@ -100,7 +98,7 @@ def draw_reticle(frame, bx1, by1, bx2, by2, color, thickness=3, length=28):
     cv2.line(frame, (bx2, by2), (bx2, by2 - length), color, thickness)
 
 
-def draw_hud(frame, label, confidence, probs, fps, is_stable=False):
+def draw_hud(frame, label, confidence, probs, fps, camera_id=0, is_stable=False):
     h, w = frame.shape[:2]
     is_real = label.startswith("REAL")
     is_fake = label.startswith("FAKE")
@@ -123,17 +121,23 @@ def draw_hud(frame, label, confidence, probs, fps, is_stable=False):
 
     # Title & Mode
     cv2.putText(frame, "LEAF AUTHENTICITY DETECTOR",
-                (14, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.68, WHITE, 2, cv2.LINE_AA)
+                (14, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.65, WHITE, 2, cv2.LINE_AA)
 
     # Status badge pill
-    cv2.rectangle(frame, (14, 38), (14 + 230, 58), (40, 40, 40), -1)
+    cv2.rectangle(frame, (14, 36), (14 + 230, 56), (40, 40, 40), -1)
     cv2.putText(frame, f"STATUS: {badge}",
-                (20, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
+                (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.40, color, 1, cv2.LINE_AA)
+
+    # Camera label & switch prompt
+    cam_name = "USB WEBCAM" if camera_id == 1 else "DEVICE CAM"
+    cam_txt = f"[{cam_name} #{camera_id} | Press 'c' to switch]"
+    cv2.putText(frame, cam_txt,
+                (254, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.40, WHITE, 1, cv2.LINE_AA)
 
     # FPS counter
     fps_txt = f"FPS: {fps:.1f}"
     tw = cv2.getTextSize(fps_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)[0][0]
-    cv2.putText(frame, fps_txt, (w - tw - 16, 28),
+    cv2.putText(frame, fps_txt, (w - tw - 16, 26),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, YELLOW, 1, cv2.LINE_AA)
 
     # Draw Center Focus Reticle on the leaf
@@ -178,9 +182,35 @@ def draw_hud(frame, label, confidence, probs, fps, is_stable=False):
     return frame
 
 
+# ── Camera Helper ─────────────────────────────────────────────────────────────
+
+def open_camera(camera_id):
+    """Open camera using DirectShow with fallback."""
+    print(f"[INFO] Opening camera #{camera_id}...")
+    cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        # Fallback to default backend
+        cap = cv2.VideoCapture(camera_id)
+    if cap.isOpened():
+        for _ in range(5):
+            cap.read()
+    return cap
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
-def run(camera_id=0, model_path="models/mobilenet_v3_small.onnx"):
+def run(camera_id=None, model_path="models/mobilenet_v3_small.onnx"):
+
+    # Auto-detect camera: prefer external webcam (index 1) if available
+    if camera_id is None:
+        test_cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+        if test_cap.isOpened():
+            test_cap.release()
+            camera_id = 1
+            print("[INFO] Detected external USB webcam -> Using Camera #1")
+        else:
+            camera_id = 0
+            print("[INFO] Using default Camera #0")
 
     session = input_name = output_name = None
     model_loaded = False
@@ -194,19 +224,19 @@ def run(camera_id=0, model_path="models/mobilenet_v3_small.onnx"):
     else:
         print(f"[WARNING] Model not found at '{model_path}' — running in preview mode.")
 
-    print(f"[INFO] Opening camera #{camera_id}...")
-    cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
+    cap = open_camera(camera_id)
     if not cap.isOpened():
-        print(f"[ERROR] Cannot open camera #{camera_id}.")
-        sys.exit(1)
-
-    # Warm-up reads
-    for _ in range(10):
-        cap.read()
+        print(f"[ERROR] Cannot open camera #{camera_id}. Trying camera #0 as fallback...")
+        camera_id = 0
+        cap = open_camera(0)
+        if not cap.isOpened():
+            print("[ERROR] No camera could be opened.")
+            sys.exit(1)
 
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    print(f"[INFO] Camera ready: {w}x{h}. Press 'q' to quit, 's' to save snapshot.")
+    print(f"[INFO] Camera #{camera_id} ready: {w}x{h}.")
+    print("[INFO] Controls: 'c' = Switch camera | 's' = Save photo | 'q' = Quit")
 
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW_NAME, 960, 600)
@@ -220,11 +250,8 @@ def run(camera_id=0, model_path="models/mobilenet_v3_small.onnx"):
     t_last     = time.perf_counter()
 
     # ── Accuracy & Precision Stabilization ────────────────────────
-    # 1. Temporal Smoothing: rolling average over 25 frames (~0.8s at 30 FPS)
     SMOOTH_N    = 25
-    # 2. Confidence Gate: model must be at least 65% confident to switch away from ANALYZING
     CONF_GATE   = 0.65
-    # 3. Stability Lock: prediction must agree for 8 consecutive frames before confirming
     LOCK_N      = 8
 
     prob_buf    = []
@@ -273,7 +300,7 @@ def run(camera_id=0, model_path="models/mobilenet_v3_small.onnx"):
                     confirmed_conf  = avg_conf
                     confirmed_probs = avg_probs
                     is_locked       = True
-                elif avg_conf < (CONF_GATE - 0.05):  # Hysteresis to prevent unneeded jitter
+                elif avg_conf < (CONF_GATE - 0.05):  # Hysteresis
                     confirmed_label = "ANALYZING..."
                     confirmed_conf  = avg_conf
                     confirmed_probs = avg_probs
@@ -298,7 +325,7 @@ def run(camera_id=0, model_path="models/mobilenet_v3_small.onnx"):
         fps = 1.0 / (sum(fps_buf) / len(fps_buf)) if fps_buf else 0.0
 
         # Draw HUD on top of live camera feed
-        display = draw_hud(frame.copy(), label, confidence, probs, fps, is_stable=is_locked)
+        display = draw_hud(frame.copy(), label, confidence, probs, fps, camera_id=camera_id, is_stable=is_locked)
         cv2.imshow(WINDOW_NAME, display)
 
         key = cv2.waitKey(1) & 0xFF
@@ -310,6 +337,23 @@ def run(camera_id=0, model_path="models/mobilenet_v3_small.onnx"):
             cv2.imwrite(fname, display)
             print(f"[INFO] Saved {fname}")
             snapshot_n += 1
+        elif key == ord('c'):
+            # Switch between Camera 0 and Camera 1
+            next_cam = 1 if camera_id == 0 else 0
+            print(f"[INFO] Switching to Camera #{next_cam}...")
+            cap.release()
+            new_cap = open_camera(next_cam)
+            if new_cap.isOpened():
+                cap = new_cap
+                camera_id = next_cam
+                prob_buf.clear()
+                stable_cid = -1
+                stable_run = 0
+                label = "ANALYZING..."
+                print(f"[OK] Now using Camera #{camera_id}")
+            else:
+                print(f"[ERROR] Could not open Camera #{next_cam}. Reverting to #{camera_id}...")
+                cap = open_camera(camera_id)
 
     cap.release()
     cv2.destroyAllWindows()
@@ -318,7 +362,7 @@ def run(camera_id=0, model_path="models/mobilenet_v3_small.onnx"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Live Leaf Real/Fake Detector")
-    parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument("--camera", type=int, default=None, help="Camera index: 1 for USB Webcam, 0 for Built-in Laptop Cam")
     parser.add_argument("--model", default="models/mobilenet_v3_small.onnx")
     args = parser.parse_args()
     run(camera_id=args.camera, model_path=args.model)
