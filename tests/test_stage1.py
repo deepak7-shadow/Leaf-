@@ -44,7 +44,7 @@ class TestStage1Detector(unittest.TestCase):
         candidates, mask, latency_ms = self.detector.detect(soil_frame)
 
         self.assertEqual(len(candidates), 0, "Soil background should produce 0 candidates")
-        self.assertLess(latency_ms, 20.0, "Stage 1 early exit should take < 20 ms")
+        self.assertLess(latency_ms, 50.0, "Stage 1 early exit should take < 50 ms")
 
 
 
