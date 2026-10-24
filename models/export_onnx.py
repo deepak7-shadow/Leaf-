@@ -16,6 +16,7 @@ import sys
 def export_mobilenet_v3_small(
     output_path: str = "models/mobilenet_v3_small.onnx",
     weights_path: Optional[str] = None,
+    num_classes: int = 3,
     opset_version: int = 17
 ) -> str:
     """Export MobileNetV3-Small model to optimized ONNX format.
@@ -23,6 +24,7 @@ def export_mobilenet_v3_small(
     Args:
         output_path: Destination path for .onnx model.
         weights_path: Optional path to trained PyTorch .pt / .pth state dict.
+        num_classes: Number of output classes (default 3: REAL, FAKE, NOT_LEAF).
         opset_version: ONNX operator set version (default 17).
         
     Returns:
@@ -38,11 +40,11 @@ def export_mobilenet_v3_small(
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
-    print("[INFO] Building MobileNetV3-Small architecture...")
+    print(f"[INFO] Building MobileNetV3-Small architecture ({num_classes} classes)...")
     if weights_path and os.path.exists(weights_path):
         model = mobilenet_v3_small(weights=None)
         in_features = model.classifier[3].in_features
-        model.classifier[3] = nn.Linear(in_features, 2)
+        model.classifier[3] = nn.Linear(in_features, num_classes)
         state_dict = torch.load(weights_path, map_location="cpu")
         model.load_state_dict(state_dict)
         print(f"[INFO] Loaded trained weights from {weights_path}")
@@ -51,11 +53,10 @@ def export_mobilenet_v3_small(
         try:
             model = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
             in_features = model.classifier[3].in_features
-            model.classifier[3] = nn.Linear(in_features, 2)
-            # Initialize binary classifier head with balanced prior
+            model.classifier[3] = nn.Linear(in_features, num_classes)
             nn.init.normal_(model.classifier[3].weight, std=0.01)
             nn.init.constant_(model.classifier[3].bias, 0)
-            print("[INFO] Initialized with pre-trained MobileNetV3-Small feature backbone.")
+            print(f"[INFO] Initialized with pre-trained MobileNetV3-Small feature backbone ({num_classes} classes).")
         except Exception as e:
             print(f"[WARNING] Could not download ImageNet weights ({e}), initializing fresh model.")
             model = mobilenet_v3_small(weights=None)

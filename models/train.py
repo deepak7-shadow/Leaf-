@@ -1,10 +1,16 @@
-"""MobileNetV3-Small training and fine-tuning pipeline for Real vs Fake leaf classification.
+"""MobileNetV3-Small training pipeline for Leaf Authenticity Detection.
 
-Includes:
-- Specialized augmentations for detecting printed, cloth, screen, and artificial artifacts
-- Transfer learning from pre-trained MobileNetV3-Small
-- Validation metrics
-- Automatic ONNX export of best model checkpoint
+3-class architecture:
+- Class 0: REAL_LEAF   (genuine living crop leaves: healthy & diseased)
+- Class 1: FAKE_LEAF   (printed, screened, artificial leaf images)
+- Class 2: NOT_LEAF    (non-leaf objects: bags, clothing, faces, skin, plastic, background)
+
+Features:
+- Balanced sampling across all 3 classes
+- Field augmentations (lighting, motion blur, color jitter, outdoor shifts)
+- Print/screen artifact augmentations on synthetic images
+- Backbone transfer learning with warmup and fine-tuning
+- Automatic ONNX export for fast edge/webcam inference
 """
 
 from typing import Dict, List, Optional, Tuple
@@ -21,73 +27,92 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
 
-# Add parent directory to sys.path if run directly
 _parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _parent_dir not in sys.path:
     sys.path.insert(0, _parent_dir)
 
 from models.export_onnx import export_mobilenet_v3_small
-from utils.synthetic_generator import SyntheticSceneGenerator
+
+# ─── Label Map ────────────────────────────────────────────────────────────────
+LABEL_REAL     = 0  # genuine living leaf
+LABEL_FAKE     = 1  # printed / screened / artificial leaf
+LABEL_NOT_LEAF = 2  # non-leaf object (bag, clothing, face, plastic, background…)
+NUM_CLASSES    = 3
+CLASS_NAMES    = ["REAL", "FAKE", "NOT_LEAF"]
 
 
-class PrintAndArtifactAugmentation:
-    """Simulates physical printing, screen moire, and artificial leaf characteristics."""
+# ─── Augmentations ────────────────────────────────────────────────────────────
 
-    def __call__(self, img_np: np.ndarray) -> np.ndarray:
-        """Apply random artifact transform to uint8 BGR image."""
-        aug = random.choice(["none", "moire", "halftone", "glare", "blur"])
-        h, w = img_np.shape[:2]
+class FieldAugmentation:
+    """Fast field condition simulation: lighting, blur, noise, compression."""
 
-        if aug == "moire":
-            freq = random.randint(4, 12)
+    def __call__(self, img_bgr: np.ndarray) -> np.ndarray:
+        choice = random.randint(0, 5)
+        if choice == 0:
+            # Blur
+            k = random.choice([3, 5])
+            return cv2.GaussianBlur(img_bgr, (k, k), 0)
+        elif choice == 1:
+            # Noise
+            noise = np.random.randint(-15, 15, img_bgr.shape, dtype=np.int16)
+            return np.clip(img_bgr.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+        elif choice == 2:
+            # Outdoor lighting / brightness
+            factor = random.uniform(0.7, 1.3)
+            return np.clip(img_bgr.astype(np.float32) * factor, 0, 255).astype(np.uint8)
+        elif choice == 3:
+            # Motion blur
+            ksize = 5
+            kernel = np.zeros((ksize, ksize), dtype=np.float32)
+            kernel[ksize // 2, :] = 1.0 / ksize
+            return cv2.filter2D(img_bgr, -1, kernel)
+        elif choice == 4:
+            # JPEG compression
+            quality = random.randint(40, 80)
+            _, enc = cv2.imencode(".jpg", img_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+            return cv2.imdecode(enc, cv2.IMREAD_COLOR)
+        return img_bgr
+
+
+class ArtifactAugmentation:
+    """Simulates screen moire, halftone, and glare for FAKE images."""
+
+    def __call__(self, img_bgr: np.ndarray) -> np.ndarray:
+        choice = random.randint(0, 3)
+        h, w = img_bgr.shape[:2]
+        if choice == 0:
+            # Moire lines
+            freq = random.randint(4, 10)
             lines = np.tile(np.sin(np.linspace(0, freq * np.pi, h))[:, None, None], (1, w, 3))
-            noisy = np.clip(img_np.astype(np.float32) + lines * 15.0, 0, 255).astype(np.uint8)
-            return noisy
-
-        elif aug == "halftone":
-            levels = random.randint(4, 8)
-            step = 256 // levels
-            quantized = (img_np // step) * step
-            return quantized.astype(np.uint8)
-
-        elif aug == "glare":
+            return np.clip(img_bgr.astype(np.float32) + lines * 12.0, 0, 255).astype(np.uint8)
+        elif choice == 1:
+            # Glare
             cx, cy = random.randint(w // 4, 3 * w // 4), random.randint(h // 4, 3 * h // 4)
-            radius = random.randint(15, 35)
-            glare_mask = np.zeros((h, w), dtype=np.float32)
-            cv2.circle(glare_mask, (cx, cy), radius, 1.0, -1)
-            glare_mask = cv2.GaussianBlur(glare_mask, (21, 21), 0)
-            result = img_np.astype(np.float32) + (glare_mask[:, :, None] * 70.0)
-            return np.clip(result, 0, 255).astype(np.uint8)
+            rad = random.randint(15, 30)
+            mask = np.zeros((h, w), dtype=np.float32)
+            cv2.circle(mask, (cx, cy), rad, 1.0, -1)
+            mask = cv2.GaussianBlur(mask, (21, 21), 0)
+            return np.clip(img_bgr.astype(np.float32) + mask[:, :, None] * 60.0, 0, 255).astype(np.uint8)
+        elif choice == 2:
+            # Screen tint
+            img = img_bgr.astype(np.float32)
+            img[:, :, 0] = np.clip(img[:, :, 0] * 1.06, 0, 255)
+            img[:, :, 2] = np.clip(img[:, :, 2] * 0.95, 0, 255)
+            return img.astype(np.uint8)
+        return img_bgr
 
-        elif aug == "blur":
-            ksize = random.choice([3, 5])
-            return cv2.GaussianBlur(img_np, (ksize, ksize), 0)
 
-        return img_np
+# ─── Dataset ──────────────────────────────────────────────────────────────────
 
+class FastLeafDataset(Dataset):
+    """Memory-efficient 3-class dataset."""
 
-class LeafDataset(Dataset):
-    """Dataset for Real Living Leaves (0) vs Fake/Printed Leaves (1)."""
-
-    def __init__(self, data_or_samples, is_train: bool = True, transform=None):
-        self.transform = transform
+    def __init__(self, samples: List[Tuple[str, int]], is_train: bool = True, transform=None):
+        self.samples = samples
         self.is_train = is_train
-        self.artifact_aug = PrintAndArtifactAugmentation()
-
-        if isinstance(data_or_samples, list):
-            self.samples = data_or_samples
-        else:
-            self.samples: List[Tuple[str, int]] = []
-            real_dir = os.path.join(data_or_samples, "real")
-            fake_dir = os.path.join(data_or_samples, "fake")
-
-            for f in os.listdir(real_dir) if os.path.exists(real_dir) else []:
-                if f.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    self.samples.append((os.path.join(real_dir, f), 0))
-
-            for f in os.listdir(fake_dir) if os.path.exists(fake_dir) else []:
-                if f.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    self.samples.append((os.path.join(fake_dir, f), 1))
+        self.transform = transform
+        self.field_aug = FieldAugmentation()
+        self.artifact_aug = ArtifactAugmentation()
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -98,113 +123,116 @@ class LeafDataset(Dataset):
         if bgr is None:
             bgr = np.zeros((224, 224, 3), dtype=np.uint8)
 
-        if self.is_train and label == 1 and random.random() < 0.5:
+        if self.is_train and random.random() < 0.35:
+            bgr = self.field_aug(bgr)
+
+        if self.is_train and label == LABEL_FAKE and random.random() < 0.40:
             bgr = self.artifact_aug(bgr)
 
+        # Direct BGR -> RGB resize
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        resized = cv2.resize(rgb, (224, 224), interpolation=cv2.INTER_LINEAR)
 
         if self.transform:
-            img_tensor = self.transform(rgb)
+            img_tensor = self.transform(resized)
         else:
-            resized = cv2.resize(rgb, (224, 224))
             img_tensor = torch.from_numpy(resized.transpose(2, 0, 1)).float() / 255.0
 
         return img_tensor, label
 
 
+# ─── Training Pipeline ────────────────────────────────────────────────────────
+
 def train_mobilenet_v3(
     data_dir: str = "data/training",
-    epochs: int = 12,
+    epochs: int = 6,
     batch_size: int = 32,
-    lr: float = 1e-4,
+    lr: float = 5e-4,
+    max_per_class: int = 1200,
     export_onnx: bool = True,
-    output_onnx: str = "models/mobilenet_v3_small.onnx"
+    output_onnx: str = "models/mobilenet_v3_small.onnx",
 ):
-    """Train MobileNetV3-Small binary classifier."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[INFO] Training on device: {device}")
+    print(f"[INFO] Training on: {device}", flush=True)
+    print(f"[INFO] Architecture: MobileNetV3-Small (Pretrained) | Classes: {CLASS_NAMES}", flush=True)
 
-    # Webcam-quality simulation augmentations
-    train_transform = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((256, 256)),
-        transforms.RandomCrop(224),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomVerticalFlip(),
-        transforms.RandomRotation(degrees=30),
-        transforms.RandomPerspective(distortion_scale=0.3, p=0.4),
-        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.08),
-        transforms.RandomGrayscale(p=0.05),
-        transforms.RandomApply([transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0))], p=0.4),
-        transforms.ToTensor(),
-        transforms.RandomApply([
-            transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.03)
-        ], p=0.5),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
+    exts = ('.png', '.jpg', '.jpeg')
+    class_dirs = [(LABEL_REAL, "real"), (LABEL_FAKE, "fake"), (LABEL_NOT_LEAF, "not_leaf")]
 
-    val_transform = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-
-    real_dir = os.path.join(data_dir, "real")
-    fake_dir = os.path.join(data_dir, "fake")
-
-    samples = []
-    for f in os.listdir(real_dir) if os.path.exists(real_dir) else []:
-        if f.lower().endswith(('.png', '.jpg', '.jpeg')):
-            samples.append((os.path.join(real_dir, f), 0))
-
-    for f in os.listdir(fake_dir) if os.path.exists(fake_dir) else []:
-        if f.lower().endswith(('.png', '.jpg', '.jpeg')):
-            samples.append((os.path.join(fake_dir, f), 1))
-
-    if not samples:
-        print(f"[ERROR] No samples found in {data_dir}!")
-        return
+    # Collect and balance samples
+    train_samples = []
+    val_samples = []
 
     random.seed(42)
-    random.shuffle(samples)
 
-    val_size = max(1, int(len(samples) * 0.2))
-    train_samples = samples[val_size:]
-    val_samples   = samples[:val_size]
+    for label, subdir in class_dirs:
+        d = os.path.join(data_dir, subdir)
+        if not os.path.exists(d):
+            continue
+        files = [os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith(exts)]
+        random.shuffle(files)
+        selected = files[:max_per_class]
 
-    train_set = LeafDataset(train_samples, is_train=True, transform=train_transform)
-    val_set   = LeafDataset(val_samples, is_train=False, transform=val_transform)
+        val_n = max(20, int(len(selected) * 0.15))
+        val_samples.extend([(f, label) for f in selected[:val_n]])
+        train_samples.extend([(f, label) for f in selected[val_n:]])
+        print(f"  Class {CLASS_NAMES[label]}: {len(selected)} loaded ({len(selected)-val_n} train, {val_n} val)", flush=True)
 
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
-    val_loader   = DataLoader(val_set, batch_size=batch_size, shuffle=False)
+    random.shuffle(train_samples)
+    random.shuffle(val_samples)
+    print(f"[INFO] Total Train: {len(train_samples)} | Total Val: {len(val_samples)}", flush=True)
 
-    n_real = sum(1 for _, l in train_samples if l == 0)
-    n_fake = sum(1 for _, l in train_samples if l == 1)
-    print(f"[INFO] Train set: {len(train_set)} ({n_real} Real, {n_fake} Fake). Val set: {len(val_set)}.")
+    # Fast transforms
+    train_transform = transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        transforms.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    val_transform = transforms.Compose([
+        transforms.ToPILImage(),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
 
-    # Load Pre-trained Model
+    train_set = FastLeafDataset(train_samples, is_train=True,  transform=train_transform)
+    val_set   = FastLeafDataset(val_samples,   is_train=False, transform=val_transform)
+
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True,  num_workers=0)
+    val_loader   = DataLoader(val_set,   batch_size=batch_size, shuffle=False, num_workers=0)
+
+    # Initialize pretrained MobileNetV3-Small
     model = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
     in_features = model.classifier[3].in_features
-    model.classifier[3] = nn.Linear(in_features, 2)
+    model.classifier[3] = nn.Linear(in_features, NUM_CLASSES)
     model.to(device)
 
-    # Class-weighted loss for balanced gradient updates
-    tot = n_real + n_fake
-    class_weights = torch.tensor([tot / (2.0 * max(1, n_real)), tot / (2.0 * max(1, n_fake))], dtype=torch.float32).to(device)
+    # Balanced class weights
+    counts = [sum(1 for _, l in train_samples if l == c) for c in range(NUM_CLASSES)]
+    total = sum(counts)
+    class_weights = torch.tensor(
+        [total / (NUM_CLASSES * max(1, c)) for c in counts],
+        dtype=torch.float32
+    ).to(device)
+
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-5)
 
     best_val_acc = 0.0
     best_weights_path = "models/best_weights.pth"
     os.makedirs("models", exist_ok=True)
 
+    print("\n[START] Training loop...", flush=True)
+
     for epoch in range(1, epochs + 1):
-        # Training Phase
+        t0 = time.time()
         model.train()
         train_loss = 0.0
         correct = 0
-        total = 0
+        total_n = 0
 
         for imgs, labels in train_loader:
             imgs, labels = imgs.to(device), labels.to(device)
@@ -217,43 +245,68 @@ def train_mobilenet_v3(
             train_loss += loss.item() * imgs.size(0)
             preds = outputs.argmax(dim=1)
             correct += (preds == labels).sum().item()
-            total += labels.size(0)
+            total_n += labels.size(0)
 
-        train_acc = (correct / total) * 100.0 if total > 0 else 0.0
+        scheduler.step()
+        train_acc = (correct / total_n) * 100.0 if total_n > 0 else 0.0
 
-        # Validation Phase
+        # Validate
         model.eval()
         val_correct = 0
-        val_total = 0
+        val_total   = 0
+        per_class_correct = [0] * NUM_CLASSES
+        per_class_total   = [0] * NUM_CLASSES
+
         with torch.no_grad():
             for imgs, labels in val_loader:
                 imgs, labels = imgs.to(device), labels.to(device)
                 outputs = model(imgs)
                 preds = outputs.argmax(dim=1)
                 val_correct += (preds == labels).sum().item()
-                val_total += labels.size(0)
+                val_total   += labels.size(0)
+                for c in range(NUM_CLASSES):
+                    mask = labels == c
+                    per_class_correct[c] += (preds[mask] == labels[mask]).sum().item()
+                    per_class_total[c]   += mask.sum().item()
 
         val_acc = (val_correct / val_total) * 100.0 if val_total > 0 else 0.0
-        print(f"Epoch {epoch:02d}/{epochs:02d} | Train Acc: {train_acc:5.1f}% | Val Acc: {val_acc:5.1f}%")
+        dur = time.time() - t0
+
+        per_class_str = " | ".join(
+            f"{CLASS_NAMES[c]}: {per_class_correct[c]/max(1,per_class_total[c])*100:.0f}%"
+            for c in range(NUM_CLASSES)
+        )
+        print(f"Epoch {epoch:02d}/{epochs:02d} [{dur:.1f}s] - Train: {train_acc:5.1f}% - Val: {val_acc:5.1f}% | {per_class_str}", flush=True)
 
         if val_acc >= best_val_acc:
             best_val_acc = val_acc
             torch.save(model.state_dict(), best_weights_path)
 
-    print(f"[SUCCESS] Training complete! Best validation accuracy: {best_val_acc:.1f}%")
+    print(f"\n[DONE] Best Validation Accuracy: {best_val_acc:.1f}%", flush=True)
 
     if export_onnx:
-        print("[INFO] Exporting fine-tuned model to ONNX...")
-        export_mobilenet_v3_small(output_path=output_onnx, weights_path=best_weights_path)
+        print("[INFO] Exporting to ONNX format...", flush=True)
+        export_mobilenet_v3_small(
+            output_path=output_onnx,
+            weights_path=best_weights_path,
+            num_classes=NUM_CLASSES,
+        )
+        print(f"[SUCCESS] Exported ONNX model to {output_onnx}", flush=True)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train MobileNetV3-Small for Leaf Detection")
-    parser.add_argument("--data-dir", default="data/training", help="Path to dataset with real/ and fake/ subdirs")
-    parser.add_argument("--output-dir", default="models", help="Directory for output models")
-    parser.add_argument("--epochs", type=int, default=12, help="Number of epochs")
-    parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
-    parser.add_argument("--lr", type=float, default=2e-4, help="Learning rate")
+    parser = argparse.ArgumentParser(description="Train 3-class MobileNetV3-Small for Leaf Authenticity Detection")
+    parser.add_argument("--data-dir",       default="data/training")
+    parser.add_argument("--epochs",         type=int,   default=6)
+    parser.add_argument("--batch-size",     type=int,   default=32)
+    parser.add_argument("--lr",             type=float, default=5e-4)
+    parser.add_argument("--max-per-class",  type=int,   default=1200)
     args = parser.parse_args()
 
-    train_mobilenet_v3(args.data_dir, epochs=args.epochs, batch_size=args.batch_size, lr=args.lr)
+    train_mobilenet_v3(
+        data_dir=args.data_dir,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        max_per_class=args.max_per_class,
+    )

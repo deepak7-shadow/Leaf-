@@ -1,133 +1,102 @@
-# 🍃 Leaf Authenticity AI: Real vs. Fake Leaf Detector
+# 🍃 AI Nozzle: Intelligent Crop Disease Scanner & Precision Spraying System
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-3776AB.svg?style=flat&logo=python&logoColor=white)](https://www.python.org/)
+[![Flutter](https://img.shields.io/badge/Flutter-3.x-02569B.svg?style=flat&logo=flutter&logoColor=white)](https://flutter.dev/)
+[![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.x-6DB33F.svg?style=flat&logo=springboot&logoColor=white)](https://spring.io/projects/spring-boot)
 [![OpenCV](https://img.shields.io/badge/OpenCV-4.8+-5C3EE8.svg?style=flat&logo=opencv&logoColor=white)](https://opencv.org/)
 [![ONNX Runtime](https://img.shields.io/badge/ONNX_Runtime-1.16+-005CED.svg?style=flat&logo=onnx&logoColor=white)](https://onnxruntime.ai/)
 [![MobileNetV3](https://img.shields.io/badge/Model-MobileNetV3--Small-brightgreen.svg?style=flat)](https://pytorch.org/vision/stable/models/mobilenetv3.html)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An intelligent, edge-optimized computer vision system that classifies and validates **living organic leaves vs. fake/synthetic leaves** (printed paper, cardboard, screen displays, cloth, plastic) in real time using your webcam or external USB camera.
-
-Powered by a fine-tuned **MobileNetV3-Small** deep learning model exported to **ONNX Runtime**, running at high framerates (30+ FPS) on standard CPUs with zero GPU requirements.
+An end-to-end precision agriculture platform combining **10-Class Crop Disease & Authenticity AI**, **real-time edge vision**, **automated solenoid spray valve controllers**, a **Flutter mobile/web app**, and a **Spring Boot microservice**.
 
 ---
 
-## ✨ Key Features
+## 🏗️ Architecture Overview
 
-- **🎯 Region-of-Interest (ROI) Targeting Reticle**:
-  - Focuses inference specifically on the leaf inside the center 280×280 target box.
-  - Ignores surrounding hands, face, room background, and variable ambient lighting.
-- **🛡️ Anti-Fluctuation & Precision Stabilization**:
-  - **25-Frame Temporal Smoothing**: Rolling probability buffer eliminates frame-by-frame jitter.
-  - **65% Confidence Gate**: Stays in an amber `SCANNING...` state until the model is confident.
-  - **8-Frame Stability Lock**: Requires consecutive consensus before confirming the final label.
-- **📷 Dual Camera & Hot-Switching**:
-  - Automatically detects and defaults to external USB webcams (`Camera #1`) or falls back to built-in laptop cameras (`Camera #0`).
-  - Press **`c`** to hot-switch between cameras live without restarting the program.
-- **⚡ Ultra-Lightweight Edge Inference**:
-  - Deployed via a pre-trained **5.8 MB ONNX model** (`models/mobilenet_v3_small.onnx`).
-  - Runs in real-time on standard laptop CPUs.
-- **📸 Snapshot Tool**:
-  - Press **`s`** to save timestamped high-resolution photos with the detection HUD overlay.
+The repository unifies all layers of the precision spraying ecosystem:
+
+1. **AI Vision & Edge Pipeline (`core/`, `models/`, `camera_test.py`)**:
+   - 10-Class Deep Learning Scanner (MobileNetV3-Small in ONNX & TFLite formats).
+   - Distinguishes **8 plant diseases** (*Anthracnose, Bacterial Leaf Spot, Black Rot, Downy Mildew, Leaf Spot/Blight, Mosaic Virus, Powdery Mildew, Rust*), **Healthy living foliage**, and **Not_Leaf / Synthetic distractors**.
+   - Solenoid valve actuation controller with debounce cooldown, master safety lockout, and automated pesticide/fertilizer prescription matching.
+
+2. **Cross-Platform Mobile & Web Client (`flutter_app/`)**:
+   - Live camera scanner & gallery image analyzer.
+   - Built-in TFLite offline inference, damage estimation, and language localizations.
+   - Cloud telemetry integration via Blynk IoT.
+
+3. **Backend Service (`spring_backend/`)**:
+   - High-throughput REST API for crop analysis, telemetry logging, and treatment recommendations.
+
+4. **Hardware Driver (`ardunio/`)**:
+   - Firmware for Arduino / ESP32 microcontroller relays actuating high-pressure solenoid spray nozzles.
 
 ---
 
 ## 📁 Repository Structure
 
 ```text
-Leaf/
-├── camera_test.py                # Main real-time camera detector & HUD
-├── run_camera.bat                # 1-Click launcher for Windows
-├── requirements.txt              # Minimal project dependencies
-├── README.md                     # Project documentation
-│
+├── config/
+│   ├── fertilizer.json          # Disease-specific fertilizer & fungicide treatment prescriptions
+│   └── settings.yaml            # Pipeline camera, detector, and valve timings
+├── core/
+│   ├── nozzle_controller.py     # Solenoid valve actuation and safety lockout logic
+│   ├── pipeline.py              # End-to-end 2-stage vision pipeline
+│   ├── stage1_detector.py       # Fast OpenCV vegetation candidate detection
+│   ├── stage2_classifier.py     # MobileNetV3 ONNX multi-class classifier
+│   └── vegetation_indices.py    # ExG / vegetation index calculations
 ├── models/
-│   ├── mobilenet_v3_small.onnx   # Deployed 5.8MB ONNX model (Ready out-of-the-box)
-│   ├── train.py                  # PyTorch training pipeline with webcam augmentations
-│   └── export_onnx.py            # Script to convert PyTorch weights to ONNX
-│
-└── utils/
-    └── synthetic_generator.py    # Synthetic leaf scene generator for training
+│   ├── class_names.json         # 10 target classes
+│   ├── crop_model_10class.onnx  # Trained 10-class ONNX edge model
+│   ├── crop_model_float16.tflite# Quantized TFLite edge model
+│   └── train_10class.py         # PyTorch 10-class training pipeline
+├── flutter_app/                 # Complete Flutter mobile/web client application
+├── spring_backend/              # Spring Boot backend API microservice
+├── ardunio/                     # Microcontroller relay & valve control firmware
+├── tests/                       # Unit and integration test suite
+├── camera_test.py               # Real-time desktop camera scanner with HUD
+├── run_camera.bat               # 1-Click desktop launcher (Windows)
+└── requirements.txt             # Edge pipeline Python dependencies
 ```
 
 ---
 
-## 🚀 Quick Start & Installation
+## 🚀 Quick Start
 
-### 1. Clone the Repository
+### 1. Run the Real-Time Camera Scanner (Desktop)
 ```bash
-git clone https://github.com/deepak7-shadow/Leaf-.git
-cd Leaf-
-```
+# Run 1-click launcher
+run_camera.bat
 
-### 2. Set Up Python Environment
-```bash
-# Create virtual environment
-python -m venv .venv
-
-# Activate on Windows:
-.\.venv\Scripts\activate
-
-# Activate on Linux/macOS:
-source .venv/bin/activate
-
-# Install dependencies:
-pip install -r requirements.txt
-```
-
-### 3. Run the Detector
-
-#### On Windows (Easiest — 1 Click):
-Double-click `run_camera.bat` or run:
-```powershell
-.\run_camera.bat
-```
-
-#### Via Command Line:
-```powershell
-# External USB Webcam (Default recommended)
-python camera_test.py --camera 1
-
-# Built-in Laptop Camera
-python camera_test.py --camera 0
-
-# Auto-detect camera
+# Or launch directly with Python
 python camera_test.py
 ```
+**Controls**:
+- `c` = Hot-switch between USB webcam and integrated laptop camera
+- `d` = Toggle vegetation mask overlay
+- `s` = Capture snapshot with HUD telemetry
+- `q` = Quit
 
----
-
-## 🎮 Interactive Controls
-
-| Key | Action |
-|:---:|:---|
-| **`c`** | **Hot-switch camera** between External USB Webcam (`#1`) and Device Cam (`#0`) |
-| **`s`** | **Save snapshot** of current frame with HUD overlay to disk |
-| **`q`** / **`ESC`** | **Quit** and close camera safely |
-
----
-
-## 🧠 Model Architecture & Training
-
-The classifier uses **MobileNetV3-Small** fine-tuned on real living leaves and spoofed/artificial substrates:
-
-- **Classes**:
-  - `0`: **REAL LEAF** (Living, chlorophyll-rich botanical plant foliage)
-  - `1`: **FAKE LEAF** (Printed paper, fabric, screen projections, plastic artificial foliage)
-- **Webcam Noise Augmentations**:
-  - Sensor Gaussian noise simulation
-  - Motion and dot-gain Gaussian blur
-  - Color jitter (gamut and lighting variations)
-  - Random perspective and rotation transforms
-- **Loss**: Class-weighted Cross-Entropy loss for balanced accuracy across datasets.
-
-### To Retrain the Model:
+### 2. Run the Test Suite
 ```bash
-python models/train.py --data-dir path/to/dataset --epochs 20 --batch-size 16
+python -m unittest discover tests
 ```
-*(The training script automatically evaluates validation accuracy and exports the updated ONNX model to `models/mobilenet_v3_small.onnx`).*
+
+### 3. Launch Flutter App
+```bash
+cd flutter_app
+flutter pub get
+flutter run
+```
+
+### 4. Launch Spring Boot Backend
+```bash
+cd spring_backend/spring_backend_fresh/spring_backend
+./mvnw spring-boot:run
+```
 
 ---
 
-## 📄 License
-This project is licensed under the MIT License — feel free to use and adapt for your agricultural and computer vision projects.
+## 🛡️ License
+MIT License.

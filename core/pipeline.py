@@ -107,6 +107,7 @@ class AINozzlePipeline:
                     "should_spray": spray_cmd.should_spray,
                     "spray_reason": spray_cmd.reason,
                     "nozzle_index": spray_cmd.nozzle_index,
+                    "treatment": spray_cmd.treatment,
                     "area": cand.area,
                     "solidity": cand.solidity
                 })

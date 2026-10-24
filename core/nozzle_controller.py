@@ -10,7 +10,33 @@ from typing import Any, Dict, Optional, Tuple
 import logging
 import time
 
+import os
+
 logger = logging.getLogger("NozzleController")
+
+DISEASE_TREATMENTS = {
+    "Anthracnose": "Copper-based fungicide + NPK mix (10m every 7d)",
+    "Bacterial_Leaf_Spot": "Copper hydroxide spray (12m every 5d)",
+    "Black_rot": "Potassium carbonate / phosphonate spray (15m every 10d)",
+    "Downy_Mildew": "Metalaxyl-based systemic fungicide (15m every 5d)",
+    "Leaf_Spot_Blight": "Mancozeb + NPK foliar spray (10m every 6d)",
+    "Mosaic_Disease": "Organic compost + Boron/Zinc foliar spray (10m every 10d)",
+    "Powdery_Mildew": "Sulfur spray + bio-fungicide (10m every 7d)",
+    "Rust": "Carbendazim spray + Phosphorus booster (10m every 7d)",
+    "Healthy": "Balanced NPK maintenance (no pesticide required)",
+    "REAL_LIVING_LEAF": "Targeted crop foliar spray",
+}
+
+DISEASE_CLASSES = {
+    "Anthracnose",
+    "Bacterial_Leaf_Spot",
+    "Black_rot",
+    "Downy_Mildew",
+    "Leaf_Spot_Blight",
+    "Mosaic_Disease",
+    "Powdery_Mildew",
+    "Rust"
+}
 
 
 @dataclass
@@ -23,6 +49,7 @@ class SprayCommand:
     bbox: Tuple[int, int, int, int]
     nozzle_index: int = 0
     pulse_duration_ms: float = 0.0
+    treatment: str = ""
 
 
 class BaseNozzleDriver(ABC):
@@ -110,11 +137,46 @@ class NozzleController:
         else:
             self.driver = SimulatedNozzleDriver()
 
+        # Load treatment prescriptions from config/fertilizer.json
+        self.treatments = dict(DISEASE_TREATMENTS)
+        fert_path = n_cfg.get("fertilizer_config", "config/fertilizer.json")
+        if os.path.exists(fert_path):
+            try:
+                import json
+                with open(fert_path, "r", encoding="utf-8") as f:
+                    fert_dict = json.load(f)
+                for crop_dis, details in fert_dict.items():
+                    treatment_text = f"{details.get('fertilizer', '')} ({details.get('application', '')})"
+                    cd_lower = crop_dis.lower()
+                    if "anthracnose" in cd_lower:
+                        self.treatments["Anthracnose"] = treatment_text
+                    elif "bacterial" in cd_lower or "spot" in cd_lower:
+                        if "Bacterial_Leaf_Spot" not in self.treatments or "bacterial" in cd_lower:
+                            self.treatments["Bacterial_Leaf_Spot"] = treatment_text
+                    elif "black_rot" in cd_lower:
+                        self.treatments["Black_rot"] = treatment_text
+                    elif "downy" in cd_lower:
+                        self.treatments["Downy_Mildew"] = treatment_text
+                    elif "powdery" in cd_lower:
+                        self.treatments["Powdery_Mildew"] = treatment_text
+                    elif "rust" in cd_lower:
+                        self.treatments["Rust"] = treatment_text
+                    elif "mosaic" in cd_lower:
+                        self.treatments["Mosaic_Disease"] = treatment_text
+                    elif "blight" in cd_lower:
+                        self.treatments["Leaf_Spot_Blight"] = treatment_text
+            except Exception as e:
+                logger.debug(f"Could not parse fertilizer config: {e}")
+
         # State tracking
         self.is_spraying = False
         self.spray_start_time = 0.0
         self.last_spray_completion_time = 0.0
         self.total_sprays = 0
+
+    def get_treatment(self, target_class: str) -> str:
+        """Lookup treatment recommendation for a disease or target class."""
+        return self.treatments.get(target_class, "Standard foliar spray")
 
     def evaluate_and_actuate(
         self,
@@ -126,7 +188,7 @@ class NozzleController:
         """Evaluate classification results and determine whether to actuate spray.
         
         Args:
-            predicted_class: Output from Stage 2 ("REAL_LIVING_LEAF" or "FAKE_PRINTED_ARTIFICIAL").
+            predicted_class: Target class (Disease names, REAL_LIVING_LEAF, Healthy, Not_Leaf).
             confidence: Confidence probability in range [0.0, 1.0].
             bbox: (x, y, w, h) bounding box of candidate leaf.
             frame_width: Frame width for multi-nozzle spatial assignment.
@@ -150,7 +212,8 @@ class NozzleController:
                 reason="Safety lockout active",
                 target_class=predicted_class,
                 confidence=confidence,
-                bbox=bbox
+                bbox=bbox,
+                treatment=self.get_treatment(predicted_class)
             )
 
         # Debounce / Cooldown Check
@@ -160,17 +223,32 @@ class NozzleController:
                 reason=f"Cooldown active ({int((self.cooldown_s - (now - self.last_spray_completion_time)) * 1000)}ms remaining)",
                 target_class=predicted_class,
                 confidence=confidence,
-                bbox=bbox
+                bbox=bbox,
+                treatment=self.get_treatment(predicted_class)
             )
 
-        # Target Class Verification: Only spray REAL_LIVING_LEAF
-        if predicted_class != "REAL_LIVING_LEAF":
+        # Target Class Verification:
+        is_disease = predicted_class in DISEASE_CLASSES
+        is_legacy_real = (predicted_class == "REAL_LIVING_LEAF")
+
+        if predicted_class in ("Healthy", "healthy"):
+            return SprayCommand(
+                should_spray=False,
+                reason="Crop foliage is healthy (no disease detected)",
+                target_class=predicted_class,
+                confidence=confidence,
+                bbox=bbox,
+                treatment=self.get_treatment("Healthy")
+            )
+
+        if not (is_disease or is_legacy_real):
             return SprayCommand(
                 should_spray=False,
                 reason=f"Rejected non-living/fake target: {predicted_class}",
                 target_class=predicted_class,
                 confidence=confidence,
-                bbox=bbox
+                bbox=bbox,
+                treatment="No spray. Target is non-crop or non-living object."
             )
 
         # Confidence Threshold Verification
@@ -180,7 +258,8 @@ class NozzleController:
                 reason=f"Confidence {confidence*100:.1f}% below threshold {self.confidence_threshold*100:.1f}%",
                 target_class=predicted_class,
                 confidence=confidence,
-                bbox=bbox
+                bbox=bbox,
+                treatment=self.get_treatment(predicted_class)
             )
 
         # Spatial nozzle indexing (e.g. 3-zone boom: Left, Center, Right)
@@ -198,14 +277,21 @@ class NozzleController:
         self.total_sprays += 1
         self.driver.set_nozzle_state(nozzle_idx, True)
 
+        reason = (
+            "Confirmed REAL_LIVING_LEAF with high confidence"
+            if is_legacy_real
+            else f"Confirmed disease: {predicted_class} (Actuating targeted treatment spray)"
+        )
+
         return SprayCommand(
             should_spray=True,
-            reason="Confirmed REAL_LIVING_LEAF with high confidence",
+            reason=reason,
             target_class=predicted_class,
             confidence=confidence,
             bbox=bbox,
             nozzle_index=nozzle_idx,
-            pulse_duration_ms=self.pulse_duration_s * 1000.0
+            pulse_duration_ms=self.pulse_duration_s * 1000.0,
+            treatment=self.get_treatment(predicted_class)
         )
 
     def update(self) -> None:

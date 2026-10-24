@@ -63,6 +63,7 @@ nozzle_controller:
   mode: "simulation"          # Options: "simulation", "serial", "gpio"
   spray_pulse_ms: 120         # Actuation duration per spray event (milliseconds)
   cooldown_ms: 250            # Debounce lockout period to prevent valve chatter
+  fertilizer_config: "config/fertilizer.json"
   serial_port: "COM3"         # For Arduino/ESP32 relay driver
   baud_rate: 115200
   gpio_pin: 18                # Raspberry Pi BCM GPIO pin

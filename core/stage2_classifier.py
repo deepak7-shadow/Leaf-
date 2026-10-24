@@ -50,6 +50,11 @@ class Stage2Classifier:
         self.confidence_threshold = float(st2_cfg.get("confidence_threshold", 0.80))
         num_threads = int(st2_cfg.get("intra_op_num_threads", 2))
 
+        # Configured classes if provided
+        raw_classes = st2_cfg.get("classes", None)
+        self.config_classes = {int(k): v for k, v in raw_classes.items()} if raw_classes else None
+        self.class_mapping = dict(self.config_classes or self.CLASS_MAPPING)
+
         # Session options for edge CPU optimization
         opts = ort.SessionOptions()
         opts.intra_op_num_threads = num_threads
@@ -72,6 +77,28 @@ class Stage2Classifier:
         )
         self.input_name = self.session.get_inputs()[0].name
         self.output_name = self.session.get_outputs()[0].name
+
+        out_shape = self.session.get_outputs()[0].shape
+        num_classes = out_shape[-1] if isinstance(out_shape[-1], int) else None
+
+        if self.config_classes:
+            self.class_mapping = dict(self.config_classes)
+        elif num_classes == 10 and os.path.exists("models/class_names.json"):
+            import json
+            try:
+                with open("models/class_names.json", "r") as f:
+                    cnames = json.load(f)
+                self.class_mapping = {i: c for i, c in enumerate(cnames)}
+            except Exception:
+                self.class_mapping = dict(self.CLASS_MAPPING)
+        elif num_classes == 3:
+            self.class_mapping = {
+                0: "REAL_LIVING_LEAF",
+                1: "FAKE_PRINTED_ARTIFICIAL",
+                2: "NOT_LEAF"
+            }
+        else:
+            self.class_mapping = dict(self.CLASS_MAPPING)
 
     def preprocess(self, roi_bgr: np.ndarray) -> np.ndarray:
         """Preprocess cropped ROI for MobileNetV3-Small input.
@@ -128,7 +155,7 @@ class Stage2Classifier:
 
         return ClassificationResult(
             class_id=class_id,
-            class_name=self.CLASS_MAPPING.get(class_id, "UNKNOWN"),
+            class_name=self.class_mapping.get(class_id, "UNKNOWN"),
             confidence=confidence,
             probabilities=[float(p) for p in probs],
             inference_ms=latency_ms
@@ -154,7 +181,7 @@ class Stage2Classifier:
         batch_tensor = np.stack(tensors, axis=0).astype(np.float32)
 
         outputs = self.session.run([self.output_name], {self.input_name: batch_tensor})
-        logits = outputs[0]  # Shape [N, 2]
+        logits = outputs[0]  # Shape [N, num_classes]
         probs = self._softmax(logits)
 
         total_latency_ms = (time.perf_counter() - t0) * 1000.0
@@ -165,7 +192,7 @@ class Stage2Classifier:
             cid = int(np.argmax(p))
             results.append(ClassificationResult(
                 class_id=cid,
-                class_name=self.CLASS_MAPPING.get(cid, "UNKNOWN"),
+                class_name=self.class_mapping.get(cid, "UNKNOWN"),
                 confidence=float(p[cid]),
                 probabilities=[float(x) for x in p],
                 inference_ms=avg_ms_per_roi
@@ -194,7 +221,7 @@ class Stage2Classifier:
 
         return ClassificationResult(
             class_id=cid,
-            class_name=self.CLASS_MAPPING.get(cid, "UNKNOWN"),
+            class_name=self.class_mapping.get(cid, "UNKNOWN"),
             confidence=conf,
             probabilities=probs,
             inference_ms=latency_ms
